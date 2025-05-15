@@ -6,97 +6,113 @@ namespace IrcServer;
 
 class Program
 {
-private static readonly List<(TcpClient Client, string nick)> _clients = new();
-    private const string Channel = "#mainC";
-    static async Task Main(string[] args)
+    private static readonly List<(TcpClient Client, string Nick)> clients = new();
+    private const string Channel = "#mychannel";
+
+    static async Task Main()
     {
         TcpListener listener = new TcpListener(IPAddress.Any, 6667);
         listener.Start();
-        Console.WriteLine("Server started on port 6667. Waiting for clients...");
+        Console.WriteLine("IRC Server running on port 6667");
 
         while (true)
         {
             TcpClient client = await listener.AcceptTcpClientAsync();
-            _clients.Add((client, "Guest"));
+            clients.Add((client, ""));
             _ = HandleClientAsync(client);
         }
     }
 
     static async Task HandleClientAsync(TcpClient client)
     {
-        string nick = "Guest";
+        string nick = "";
         try
         {
             using NetworkStream stream = client.GetStream();
             using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
             using StreamWriter writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
-            await writer.WriteLineAsync($"Welcome to the IRC server! Your nickname is {nick}.");
-            await writer.WriteLineAsync($"To change your nickname, use the command: /nick <new_nick>");
-            await writer.WriteLineAsync("End of MOTD.");
+
+            // Send welcome message
+            await writer.WriteLineAsync($":server 001 {nick} :Welcome to the IRC Server!");
+            await writer.WriteLineAsync($":server 376 {nick} :End of MOTD");
+
             while (true)
             {
-                string message = await reader.ReadLineAsync();
-                if (message == null) break;
+                string? line = await reader.ReadLineAsync();
+                if (line == null) break;
 
-                if (message.StartsWith("/nick "))
+                Console.WriteLine($"Received: {line}");
+
+                // Parse IRC commands
+                if (line.StartsWith("NICK"))
                 {
-                    string newNick = message.Substring(6);
-                    nick = newNick;
-                    _clients[_clients.FindIndex(c => c.Client == client)] = (client, newNick);
-                    await writer.WriteLineAsync($"Your nickname has been changed to {newNick}.");
+                    nick = line.Split(' ')[1].Trim();
+                    clients[clients.FindIndex(c => c.Client == client)] = (client, nick);
+                    await writer.WriteLineAsync($":server NOTICE {nick} :Nickname set to {nick}");
                 }
-                else if (message.StartsWith("/quit"))
+                else if (line.StartsWith("USER"))
                 {
-                    await writer.WriteLineAsync("Goodbye!");
+                    await writer.WriteLineAsync($":server NOTICE {nick} :User registered");
+                }
+                else if (line.StartsWith("PRIVMSG"))
+                {
+                    string message = line.Substring(line.IndexOf(':') + 1);
+                    string target = line.Split(' ')[1];
+                    if (target == Channel)
+                    {
+                        Console.WriteLine("a");
+                        await BroadcastAsync($":{nick}!user@host PRIVMSG {Channel} :{message}", client);
+                        Console.WriteLine($"<{nick} in {Channel}> {message}");
+                    }
+                }
+                else if (line.StartsWith("PING"))
+                {
+                    await writer.WriteLineAsync($"PONG {line.Split(' ')[1]}");
+                }
+                else if (line.StartsWith("QUIT"))
+                {
                     break;
                 }
-                else if (message.StartsWith("/list"))
+                else if (line.StartsWith("LIST"))
                 {
-                    StringBuilder sb = new StringBuilder("Connected users:");
-                    foreach (var (c, n) in _clients)
+                    StringBuilder list = new StringBuilder();
+                    foreach (var (c, n) in clients)
                     {
-                        sb.AppendLine($" - {n}");
-                    }
-                    await writer.WriteLineAsync(sb.ToString());
-                }
-                else if (message.StartsWith("/msg "))
-                {
-                    string[] parts = message.Split(' ', 3);
-                    if (parts.Length < 3)
-                    {
-                        await writer.WriteLineAsync("Usage: /msg <nick> <message>");
-                        continue;
-                    }
-                    string targetNick = parts[1];
-                    string targetMessage = parts[2];
-                    var targetClient = _clients.FirstOrDefault(c => c.nick == targetNick).Client;
-                    if (targetClient != null)
-                    {
-                        StreamWriter targetWriter = new StreamWriter(targetClient.GetStream(), Encoding.UTF8) { AutoFlush = true };
-                        await targetWriter.WriteLineAsync($"{nick} (private): {targetMessage}");
-                    }
-                    else
-                    {
-                        await writer.WriteLineAsync($"User {targetNick} not found.");
-                    }
-                }
-                else
-                {
-                    foreach (var (c, n) in _clients)
-                    {
-                        if (c != client)
+                        if (n != "")
                         {
-                            StreamWriter clientWriter = new StreamWriter(c.GetStream(), Encoding.UTF8) { AutoFlush = true };
-                            await clientWriter.WriteLineAsync($"{nick}: {message}");
+                            list.AppendLine($"{n}");
                         }
                     }
+                    await writer.WriteLineAsync($":server 353 {nick} = {Channel}: {string.Join(" ", list)}");
                 }
             }
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
-            throw;
+            Console.WriteLine($"Client error: {e.Message}");
+        }
+
+        clients.RemoveAll(c => c.Client == client);
+        client.Close();
+        Console.WriteLine($"Client {nick} disconnected");
+    }
+
+    static async Task BroadcastAsync(string message, TcpClient sender)
+    {
+        Console.WriteLine("a");
+        foreach (var (client, _) in clients)
+        {
+            Console.WriteLine($"Client {client.Client.RemoteEndPoint} Sender: {sender.Client.RemoteEndPoint}");
+            if (!client.Client.RemoteEndPoint.Equals(sender.Client.RemoteEndPoint) && client.Connected)
+            {
+                try
+                {
+                    var stream = client.GetStream();
+                    var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+                    await writer.WriteLineAsync(message);
+                }
+                catch { }
+            }
         }
     }
 }
