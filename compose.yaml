@@ -1,0 +1,7 @@
+﻿services:
+  ircserver:
+    image: ircserver
+    build:
+      context: .
+      dockerfile: IrcServer/Dockerfile
+
